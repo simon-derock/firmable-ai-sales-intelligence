@@ -1,132 +1,166 @@
 # Dataset Manifest
 
 **Source:** `2026-09-14T10_00_00.json.zst`
-**Format:** Zstandard-compressed NDJSON (Shodan snapshot)
+**Format:** Zstandard-compressed NDJSON (Shodan internet scan snapshot)
 **Compressed size:** 11.51 GB
-**Profiled:** 2026-09-15
+**Profiled:** 2026-09-15 — 14 min 31 sec streaming pass, no decompression to disk
 
 ---
 
-## Scale (100k sample, first pass)
+## Scale (Full Dataset)
 
 | Metric | Value |
 |---|---|
-| Records sampled | 96,199 |
-| Error rate | 0.00% |
-| Data quality | Clean — no malformed JSON or schema violations |
-
-> ⚠️ Full-dataset profile in progress. Numbers below are sample estimates.
+| Total records | **8,555,719** |
+| Malformed JSON | 0 |
+| Malformed schema | 0 |
+| **Error rate** | **0.00%** — data is exceptionally clean |
 
 ---
 
 ## Identity Field Coverage
 
-| Field | Coverage |
-|---|---|
-| `org` | **99.8%** — primary account identity field |
-| `ip_str` | 100% — always present |
-| `domains` | 76.0% — usable but not universal |
-| `asn` | ~99% (estimated) |
-| `country_code` | via `location` nested object |
-| `cloud_provider` | 42.1% — large cloud footprint |
-
-**Key finding:** `org` is the most reliable grouping key. Domain is present on ~3/4 of records but has identity ambiguity (768 domains map to >1 org in 100k sample — ~5.7% ambiguity rate).
-
-### Cardinality (100k sample)
-
-| Key | Unique count | Observations per key |
+| Field | Coverage | Notes |
 |---|---|---|
-| IPs | 83,490 | ~1.15 obs/IP |
-| Domains | 13,347 | ~7.2 obs/domain |
-| Orgs | 5,058 | ~19 obs/org |
-| ASNs | 3,365 | ~28 obs/ASN |
-| Countries | 156 | — |
+| `org` | **99.8%** | Primary account grouping key |
+| `ip_str` | 100% | Always present |
+| `domains` | **74.6%** | Missing for 1 in 4 records |
+| `asn` | ~99% | Highly reliable secondary key |
+| `cloud_provider` | **39.2%** | Large cloud footprint |
+| `country_code` | ~99% | Via nested `location` object |
 
-**Account aggregation strategy:** Group by `org` as primary key, with `asn` and `domains` as secondary enrichment. IP-level grouping would produce too many accounts (~83k accounts from 96k records).
+### Cardinality
+
+| Key | Unique count | Avg observations/entity |
+|---|---|---|
+| IPs | 2,902,773 | ~2.9 obs/IP |
+| Domains | 383,827 | ~22 obs/domain |
+| **Orgs** | **87,425** | **~97 obs/org** ← account count |
+| ASNs | 30,583 | ~280 obs/ASN |
+| Countries | 229 | — |
+
+> [!IMPORTANT]
+> **Account cardinality is ~87,425 unique orgs.** This is the target sales universe.
+> At 97 observations per org on average, aggregation compresses 8.5M records to ~87K accounts.
+> `org` coverage of 99.8% makes it the unambiguous primary grouping key.
+
+**Domain identity ambiguity:** 38,956 domains (10.1%) map to more than one org.
+Resolution: prefer org as primary key; use ASN agreement to break ties.
 
 ---
 
 ## Security Signal Distribution
 
 ### Vulnerability Coverage
-- **% with CVEs:** 0.0% in first 100k records
-- **Interpretation:** Vulnerability data is either sparsely distributed across the full dataset or concentrated in specific scan modules. Full-dataset profile required before drawing conclusions.
-- **Action:** Do not weight vulnerability signals until full scan confirms distribution.
-
-### Risky Exposure (deterministic, no CVE required)
-
-| Signal | Count (100k) | Rate |
+| Signal | Count | Rate |
 |---|---|---|
-| Exposed DB ports (3306/5432/6379/27017/9200) | 286 | 0.30% |
-| Exposed admin ports (8080/8443/8888/9000/9090) | 928 | 0.96% |
-| Self-signed certificates | 0 | — (not in sample) |
-| EOL software tags | 0 | — (not in sample) |
+| Records with any CVE | **0** | **0.00%** |
+| Unique CVEs | 0 | — |
+| Critical CVEs (CVSS ≥ 9.0) | 0 | — |
+| High CVEs (7.0–8.9) | 0 | — |
+
+> [!WARNING]
+> **Vuln data is absent from this dataset snapshot.** The `vulns` field appears uniformly empty across all 8.5M records. This is a Shodan API subscription artefact — the public/community scan feed does not include vulnerability enrichment. The CVE/CVSS signals in the scoring engine are architecturally correct but will score zero until a vuln-enriched feed is added.
+>
+> **Impact:** The deterministic signal engine falls back to port exposure, TLS hygiene, EOL tags, and cloud detection as primary differentiators. These remain strong buying signals.
+
+### Port-Based Exposure Signals
+| Signal | Count | Rate |
+|---|---|---|
+| Exposed DB ports (3306/5432/6379/27017/9200/1433) | **22,729** | **0.27%** |
+| Exposed admin/management ports | **127,510** | **1.49%** |
+
+At 87K accounts: exposed DB affects ~2,500 accounts; exposed admin affects ~14,000 accounts — meaningfully sized target segments.
 
 ---
 
 ## Service Distribution
 
-### Top Ports
+### Top 10 Ports (Full Dataset)
 
-| Port | Count | Notes |
+| Port | Count | Service | Security Relevance |
+|---|---|---|---|
+| **80** | 912,366 | HTTP | Baseline — unencrypted web |
+| **443** | 464,501 | HTTPS | Standard TLS |
+| **179** | 304,942 | BGP | ⚠️ Routing protocol exposed — high severity |
+| **7547** | 74,895 | TR-069 | ⚠️ ISP router management — critical if misconfigured |
+| **8443** | 71,406 | HTTPS-alt | Admin/management over TLS |
+| **81** | 68,664 | HTTP-alt | Non-standard HTTP |
+| **25** | 68,097 | SMTP | Email server |
+| **5903** | 58,331 | VNC | ⚠️ Remote desktop — high exposure risk |
+| **1433** | 54,806 | MSSQL | ⚠️ Microsoft SQL Server exposed |
+| **993** | 54,272 | IMAPS | Encrypted IMAP |
+
+> [!IMPORTANT]
+> **Port 179 (BGP)** at 304K records is the 3rd most common port. BGP exposure is a critical finding for a cybersecurity sales pitch — misconfigured BGP can enable route hijacking.
+> **Port 5903 (VNC)** and **1433 (MSSQL)** in the top 10 are strong buying signals for exposed remote access and database services.
+
+### Top 5 Products
+
+| Product | Count | Notes |
 |---|---|---|
-| 80 | 12,351 | HTTP |
-| 12304 | 10,507 | ⚠️ Non-standard — investigate |
-| 443 | 6,473 | HTTPS |
-| 14903 | 2,319 | Non-standard |
-| 18113 | 2,032 | Non-standard |
-| 8568 | 1,849 | Non-standard |
-| 5503 | 1,811 | Non-standard |
-| 1023 | 1,436 | Reserved range |
-| 3333 | 1,392 | Non-standard |
-| 9188 | 1,326 | Non-standard |
+| nginx | 374,090 | Web server |
+| CloudFront httpd | 152,174 | AWS CDN proxy |
+| AWS ELB | 89,271 | Load balancer |
+| Apache httpd | 81,357 | Web server |
+| AkamaiGHost | 62,969 | CDN proxy |
 
-**Finding:** High volume on non-standard ports (12304, 14903, 18113) — likely IoT or embedded devices. Standard HTTP/HTTPS are top-2 expected. Port 1023 (reserved range) is notable.
+Heavy CDN/cloud proxy presence confirms 39.2% cloud rate. CDN-fronted infrastructure means many domain observations represent the same underlying org.
 
-### Top Products
+---
 
-| Product | Count |
+## Architecture Implications (Evidence-Based)
+
+### 1. Account Aggregation: Use `org` as primary key
+- 99.8% coverage, 87K unique values → tractable account universe
+- ~97 obs/account → rich signal aggregation per account
+- No entity resolution ML needed — `org` field is authoritative enough
+
+### 2. Scoring Without Vulns: Port + TLS + Cloud signals carry the weight
+- Port exposure (BGP 179, VNC 5903, MSSQL 1433) is the strongest available signal
+- TLS hygiene (self-signed, expired) will be the second differentiator
+- Cloud presence (39.2%) is a product-fit signal, not a risk signal
+- EOL software tags remain in the model; coverage to be validated at account level
+
+### 3. CVE Signal Architecture: Correct design, wrong data source
+- The `VulnerabilityRecord` / `critical_cve_exposure` signal is the right abstraction
+- To activate it: enrich with NVD CVE feed cross-referenced against product/version fields
+- Priority for M3+: extract `product` + `version` from records → lookup CVE database
+
+### 4. Scoring Weight Recalibration (Post-MANIFEST)
+The original signal weights were authored pre-profiling. Given vuln data absence:
+- Port-based signals (`exposed_database`, `exposed_admin_panel`) should carry more relative weight
+- BGP exposure (port 179) warrants a dedicated signal — currently captured under `high_port_diversity`
+- New signal candidates: `bgp_exposed`, `vnc_exposed`, `rdp_exposed`, `mssql_exposed`
+
+### 5. Target Universe for Sales UI
+- ~87K accounts total
+- ~14K with admin panel exposure → first priority filter
+- ~2.5K with database exposure → highest priority
+- BGP/VNC/MSSQL exposed (to quantify at account level in M2)
+
+---
+
+## Open Questions (Resolved by This Profile)
+
+| Question | Answer |
 |---|---|
-| nginx | 3,217 |
-| CloudFront httpd | 2,049 |
-| Apache httpd | 1,200 |
-| AWS ELB | 1,145 |
-| AkamaiGHost | 831 |
+| Account cardinality? | **87,425 orgs** |
+| Vuln data present? | **No — feed limitation** |
+| Org coverage? | **99.8% — primary key confirmed** |
+| Cloud footprint? | **39.2%** |
+| Data quality? | **Perfect — 0% error rate** |
 
-**Finding:** Heavy CDN/cloud-proxy presence (CloudFront, Akamai, AWS ELB). These represent infra in front of actual services — need org-level aggregation to de-duplicate.
+## Remaining Open Questions
 
----
-
-## Architecture Implications
-
-### Entity Resolution Strategy
-- **Primary key:** `org` field (99.8% coverage)
-- **Secondary keys:** `asn`, `domains` for enrichment
-- **IP → Account ratio:** ~1.15 observations/IP → accounts will have multiple services
-- **Domain ambiguity:** ~5.7% of domains span multiple orgs — resolve by majority-vote or ASN agreement
-
-### Scoring Signal Hierarchy (pre-full-scan hypothesis)
-1. **Deterministic signals first:** exposed ports, non-standard ports, risky service combinations
-2. **CVE signals:** sparse in sample — weight heavily when present, don't penalise absence
-3. **Cloud presence (42%):** flag for cloud security product fit
-4. **Product diversity:** varied products = larger attack surface
-
-### What to Build Next (M2)
-1. Account aggregator: `org` → aggregated observations
-2. Deterministic signal engine: port exposure, product fingerprint, cloud detection
-3. Baseline scorer: sum of weighted signal hits, no LLM
-4. Full profile results will validate/adjust weights
+- [ ] Per-account signal distribution across full 87K orgs (M2 output)
+- [ ] BGP/VNC/MSSQL account count once aggregated
+- [ ] EOL tag coverage across full org universe
+- [ ] TLS self-signed/expired cert rate at account level
+- [ ] Whether `product`+`version` fields are populated enough for CVE cross-referencing
 
 ---
 
-## Open Questions (Pending Full-Dataset Profile)
-- [ ] What % of records contain CVE data across full 7.5M records?
-- [ ] What is full cardinality of unique orgs across the dataset?
-- [ ] Do non-standard high-volume ports (12304, 14903) belong to specific product families?
-- [ ] What is the SSL/TLS expiry and self-signed certificate rate at scale?
-- [ ] Are vuln-heavy records clustered by country, ASN, or product?
-
----
-
-*Profile JSON: `raw/profile_sample_100k.json`*
-*Full profile: `raw/profile_full.json` (in progress)*
+*Full profile JSON: `raw/profile_full.json`*
+*Sample profile JSON: `raw/profile_sample_100k.json`*
+*Profiler: `src/firmable/data/ingest.py` | `src/firmable/data/profiler.py`*
